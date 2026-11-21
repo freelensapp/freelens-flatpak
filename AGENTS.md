@@ -18,8 +18,10 @@ The tooling is here and not in a workflow of the Flathub repository, because
 Flathub allows only its own actions and `peter-evans/create-pull-request` in
 the repositories of its organization, and its global external data checker,
 which updates the URLs and checksums by itself, cannot write the release notes
-into the metainfo. The Flathub repository opts out of that checker in
-`flathub.json`, so that the two do not open competing pull requests.
+into the metainfo. The `freelens.deb` sources in the manifest have no
+`x-checker-data`, so that the checker and this repository do not open
+competing pull requests. The checker still updates the other sources, such as
+`host-spawn`; do not opt out of it with `flathub.json`, or they stay behind.
 
 - **`make.sh`** — Updates a checkout of the Flathub repository. Reads
   `.versions.yaml` for the target version, queries the GitHub Releases API for
