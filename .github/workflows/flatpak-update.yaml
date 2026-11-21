@@ -1,0 +1,109 @@
+name: Automated Flathub update
+
+# The update reaches flathub/app.freelens.Freelens through the fork
+# freelensapp/app.freelens.Freelens, as a pull request from a branch of the
+# fork. Flathub allows only its own actions and peter-evans/create-pull-request
+# in its repositories, so the tooling lives here and not in a workflow there.
+on:
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak-update:
+    name: Flathub update
+
+    runs-on: ubuntu-24.04-arm
+    environment: automated
+    timeout-minutes: 15
+
+    if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/rerun')
+
+    env:
+      DO_NOT_TRACK: "1"
+      FORK: freelensapp/app.freelens.Freelens
+      UPSTREAM: flathub/app.freelens.Freelens
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # mise-action adds --locked on its own when a lockfile is present, so
+      # yq is verified against mise.lock.
+      - name: Install mise
+        uses: jdx/mise-action@v5
+        with:
+          version: 2026.11.12 # datasource=github-releases depName=jdx/mise
+
+      - name: Set version
+        run: |
+          echo "version=$(yq -r '.freelens' .versions.yaml)" | tee -a "$GITHUB_ENV"
+
+      # The branch of the pull request is committed on top of master of the
+      # fork, which has to be the master of upstream for the pull request to
+      # show only the update.
+      - name: Sync the master branch of the fork
+        run: gh repo sync "$FORK" --branch master
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      # gh serves as the credential helper, so the push below authenticates
+      # with GH_TOKEN and the token never lands in .git/config.
+      - name: Clone the master branch of the fork
+        run: |
+          gh auth setup-git
+          git clone --depth 1 --single-branch --branch master \
+            "https://github.com/${FORK}.git" app.freelens.Freelens
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Update the manifest and the metainfo
+        run: bash -x make.sh app.freelens.Freelens
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Check for changes
+        run: |
+          if [[ -n "$(git -C app.freelens.Freelens status --porcelain)" ]]; then
+            echo "changes=true" | tee -a "$GITHUB_ENV"
+          else
+            echo "changes=false" | tee -a "$GITHUB_ENV"
+          fi
+
+      - name: Commit and push to branch
+        if: env.changes == 'true'
+        uses: EndBug/add-and-commit@v11
+        with:
+          cwd: app.freelens.Freelens
+          github_token: ${{ secrets.GH_TOKEN }}
+          default_author: github_actions
+          add: .
+          message: "freelens: Update freelens.deb to ${{ env.version }}"
+          new_branch: update-freelens-${{ env.version }}
+          fetch: false
+          push: origin update-freelens-${{ env.version }} --set-upstream --force
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Create pull request
+        if: env.changes == 'true'
+        run: |-
+          if [[ $(gh pr view \
+            --repo "$UPSTREAM" \
+            --json state \
+            --jq .state \
+            "freelensapp:update-freelens-${version}" || true) != "OPEN" ]];
+          then
+            gh pr create \
+              --repo "$UPSTREAM" \
+              --base master \
+              --head "freelensapp:update-freelens-${version}" \
+              --title "freelens: Update freelens.deb to ${version}" \
+              --body "Updates Freelens to ${version}: https://github.com/freelensapp/freelens/releases/tag/v${version}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
